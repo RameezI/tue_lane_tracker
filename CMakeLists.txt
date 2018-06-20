@@ -9,7 +9,10 @@ project(tue_lane_tracker)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
   roscpp
+  rospy
   std_msgs
+  message_generation 
+  dynamic_reconfigure
 )
 
 ## System dependencies are found with CMake's conventions
@@ -55,11 +58,10 @@ find_package(Boost 1.62.0 EXACT REQUIRED COMPONENTS program_options )
 # )
 
 ## Generate services in the 'srv' folder
-# add_service_files(
-#   FILES
-#   Service1.srv
-#   Service2.srv
-# )
+  add_service_files(
+    FILES
+    reboot.srv
+   )
 
 ## Generate actions in the 'action' folder
 # add_action_files(
@@ -69,10 +71,7 @@ find_package(Boost 1.62.0 EXACT REQUIRED COMPONENTS program_options )
 # )
 
 ## Generate added messages and services with any dependencies listed here
-# generate_messages(
-#   DEPENDENCIES
-#   sensor_msgs#   std_msgs
-# )
+generate_messages(DEPENDENCIES std_msgs)
 
 ################################################
 ## Declare ROS dynamic reconfigure parameters ##
@@ -89,10 +88,9 @@ find_package(Boost 1.62.0 EXACT REQUIRED COMPONENTS program_options )
 ##     and list every .cfg file to be processed
 
 ## Generate dynamic reconfigure parameters in the 'cfg' folder
-# generate_dynamic_reconfigure_options(
-#   cfg/DynReconf1.cfg
-#   cfg/DynReconf2.cfg
-# )
+ generate_dynamic_reconfigure_options(
+   cfg/LaneTracker.cfg
+ )
 
 ###################################
 ## catkin specific configuration ##
@@ -106,8 +104,8 @@ find_package(Boost 1.62.0 EXACT REQUIRED COMPONENTS program_options )
 catkin_package(
 #   INCLUDE_DIRS 	include
 #   LIBRARIES    	TUeLDT
-#   CATKIN_DEPENDS 	roscpp  std_msgs
-#  DEPENDS 		system_lib
+    CATKIN_DEPENDS 	roscpp  std_msgs message_runtime
+#   DEPENDS 		system_lib
 )
 
 
@@ -130,9 +128,6 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
 )
 
-#link_directories(lib)
-
-
 
 ## Declare a C++ executable
 ## With catkin_make all packages are built within a single CMake context
@@ -146,9 +141,6 @@ include_directories(
 ## e.g. "rosrun someones_pkg node" instead of "rosrun someones_pkg someones_pkg_node"
    set_target_properties(${PROJECT_NAME}_node PROPERTIES OUTPUT_NAME node PREFIX "")
 
-## Add cmake target dependencies of the executable
-## same as for the library above
-# add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Specify libraries to link a library or executable target against
  target_link_libraries(${PROJECT_NAME}_node
@@ -158,6 +150,11 @@ include_directories(
    ${OpenCV_LIBS} 
    ${CMAKE_THREAD_LIBS_INIT}
    )
+
+## Add cmake target dependencies of the executable
+## same as for the library above
+#add_dependencies(${PROJECT_NAME}_node ${PROJECT_NAME}_gencfg ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS} )
+
 
 
 #############

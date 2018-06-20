@@ -3,6 +3,11 @@
 #include "StateMachine.h"
 #include "boost/program_options.hpp"
 #include "ros/ros.h"
+#include <ros/xmlrpc_manager.h>
+#include <dynamic_reconfigure/server.h>
+#include "tue_lane_tracker/reboot.h"
+#include "tue_lane_tracker/LaneTrackerConfig.h"
+
 
 using namespace std;
 namespace po = boost::program_options;
@@ -10,7 +15,14 @@ namespace po = boost::program_options;
 
 //Fucntion definitions
 unique_ptr<FrameFeeder> createFrameFeeder(FrameSource srcMode, string srcString);
+bool reboot(tue_lane_tracker::reboot::Request  &req, tue_lane_tracker::reboot::Response &res);
+void callback(tue_lane_tracker::LaneTrackerConfig& Config, uint32_t level);
+void shutdownCallback(XmlRpc::XmlRpcValue& params, XmlRpc::XmlRpcValue& result);
 
+// Signal-safe flag for whether ros-kill shutdown is requested
+sig_atomic_t volatile g_request_shutdown = 0;
+sig_atomic_t volatile g_request_reboot 	 = 0;
+ 
 
 int main(int argc, char* argv[]) /**
 	This is the entry point of the application.
@@ -20,12 +32,22 @@ int main(int argc, char* argv[]) /**
 {
 	int lReturn 	= 0;
 
-	ros::init(argc, argv, "lane_tracker");
-	ros::NodeHandle lROS_HANDLE;
+	ros::init(argc, argv, "lane_tracker", ros::init_options::NoSigintHandler);
+ 	signal(SIGINT, &SigInt::handler);
+
+	ros::NodeHandle   ros_handle;
+
+	//ros::Rate 	loop_rate(20);
+	ros::ServiceServer service = ros_handle.advertiseService("lane_tracker/reboot", reboot);
+	dynamic_reconfigure::Server<tue_lane_tracker::LaneTrackerConfig> parm_server;
+	dynamic_reconfigure::Server<tue_lane_tracker::LaneTrackerConfig>::CallbackType cb;
+	cb = boost::bind(&callback, _1, _2);
+	parm_server.setCallback(cb);
+
+
 
 	FrameSource 	lFrameSource;
 	std::string 	lSourceStr;
-
 
 	// Prsing command line options
 	{
@@ -64,6 +86,16 @@ int main(int argc, char* argv[]) /**
 	} // End parsing command line options
 
 
+	unique_ptr<LaneTracker::Config> lPtrConfig;
+	if (lReturn == 0) //create Configuration
+	{
+	  lPtrConfig.reset(new LaneTracker::Config);
+	  if(lPtrConfig == nullptr)
+	  {
+	    lReturn = -1;
+	  }
+	}
+
 
 	unique_ptr<FrameFeeder> lPtrFeeder;
 	if (lReturn == 0) //create FrameFeeder
@@ -79,6 +111,10 @@ int main(int argc, char* argv[]) /**
 	shared_ptr<SigInt> lPtrSigInt;
 	if(lReturn == 0) //create SigInt
 	{
+	  // Override XMLRPC shutdown
+  	  ros::XMLRPCManager::instance()->unbind("shutdown");
+  	  ros::XMLRPCManager::instance()->bind("shutdown", shutdownCallback);
+
 	  lPtrSigInt = make_shared<SigInt>();
 	  if(lPtrSigInt->sStatus == SigStatus::FAILURE)
 	  {
@@ -97,7 +133,7 @@ int main(int argc, char* argv[]) /**
 
 	  try
 	  {
-		  lPtrStateMachine.reset( new StateMachine(move(lPtrFeeder)) );
+	       lPtrStateMachine.reset( new StateMachine( move(lPtrFeeder), *lPtrConfig.get() ) );
 	  }
 	  catch(const char* msg)
 	  {
@@ -123,50 +159,62 @@ int main(int argc, char* argv[]) /**
 
 
 
-    if(lReturn == 0) //spin the stateMachine
-    {
-    	uint64_t        lCyclesCount = 0;
-    	ProfilerLDT     lProfiler;
-    	StateMachine&   stateMachine = *lPtrStateMachine.get();
+	if(lReturn == 0) //spin the stateMachine
+        {
+    	  uint64_t        lCyclesCount = 0;
+    	  ProfilerLDT     lProfiler;
+    	  StateMachine&   stateMachine = *lPtrStateMachine.get();
 
 
-		while (stateMachine.getCurrentState() != States::DISPOSED )
-		{
+	  while (stateMachine.getCurrentState() != States::DISPOSED )
+	  {
+            if ( (lPtrSigInt->sStatus == SigStatus::STOP) | (g_request_shutdown==1))
+	    {
+               stateMachine.quit();
+	    }
 
-		  ros::spinOnce();
-		  lProfiler.start("StateMachine_Cycle");
-                    if (lPtrSigInt->sStatus == SigStatus::STOP)
-                      stateMachine.quit();
+	    if (g_request_reboot==1)
+	    {
+	       stateMachine.reboot();
+	       g_request_reboot = 0;
+	    }
 
-                    lReturn = stateMachine.spin();
-                    lCyclesCount ++;
+	    // spin the state-Machine
+	    ros::spinOnce();
+	    lProfiler.start("StateMachine_Cycle");
 
-		  lProfiler.end();
+            lReturn = stateMachine.spin();
+             lCyclesCount ++;
+	
+	    lProfiler.end();
 
-		  if(lPreviousState != stateMachine.getCurrentState())
-		  {
-		    cout<<endl<<stateMachine.getCurrentState();
-		    std::cout.flush();
-		    lPreviousState = stateMachine.getCurrentState();
-		  }
-		  else if (lCyclesCount%100==0)
-		  {
-		      cout <<endl<<stateMachine.getCurrentState();
-		      cout <<"state cycle-count = " << lCyclesCount<<"    Cycle-Time [Min, Avg, Max] : "
-		      <<"[ "<<lProfiler.getMinTime("StateMachine_Cycle")<<" "
-		      <<lProfiler.getAvgTime("StateMachine_Cycle")<<" "
-		      <<lProfiler.getMaxTime("StateMachine_Cycle")<<" "
-		      <<" ]";
-		  }
+	    if(lPreviousState != stateMachine.getCurrentState())
+	    {
+		cout<<endl<<stateMachine.getCurrentState();
+		std::cout.flush();
+		lPreviousState = stateMachine.getCurrentState();
+	    }
 
-		}// End spinning
-    }
+	    else if (lCyclesCount%100==0)
+	    {
+	 	cout <<endl<<stateMachine.getCurrentState();
+		cout <<"state cycle-count = " << lCyclesCount<<"    Cycle-Time [Min, Avg, Max] : "
+		<<"[ "<<lProfiler.getMinTime("StateMachine_Cycle")<<" "
+		<<lProfiler.getAvgTime("StateMachine_Cycle")<<" "
+		<<lProfiler.getMaxTime("StateMachine_Cycle")<<" "
+		<<" ]";
+	    }
 
-    lPtrStateMachine.reset( nullptr);
-	cout<<endl<<"The program ended with exit code " <<lReturn<<endl;
-	return(lReturn);
+	  }// End spinning
+	}
+
+      	lPtrStateMachine.reset( nullptr);
+
+       	cout<<endl<<"The node ended with exit code: " <<lReturn<<endl;
+       	ros::shutdown();
+
+       	return(lReturn);
 }
-
 
 
 unique_ptr<FrameFeeder> createFrameFeeder(FrameSource srcMode, string srcString)
@@ -205,8 +253,40 @@ unique_ptr<FrameFeeder> createFrameFeeder(FrameSource srcMode, string srcString)
 	    <<"******************************"<<endl<<endl;
 	   lPtrFeeder = nullptr;
 	}
-
 	return lPtrFeeder;
 
 }
 
+void callback(tue_lane_tracker::LaneTrackerConfig& Config, uint32_t level)
+{
+  cout<<endl<<"New configuration recieved from the dynamic parameter server"<<endl;
+  cout<<"Rebooting..."<<endl<<endl;
+
+  g_request_reboot=1;
+}
+
+bool reboot(tue_lane_tracker::reboot::Request  &req, tue_lane_tracker::reboot::Response &res)
+{
+   cout<<endl<<"Rebooting..."<<endl<<endl;
+
+   res.config_loaded = true;
+   g_request_reboot=1;
+   return true;
+}
+
+
+// Replacement "shutdown" XMLRPC callback
+void shutdownCallback(XmlRpc::XmlRpcValue& params, XmlRpc::XmlRpcValue& result)
+{
+  int num_params = 0;
+  if (params.getType() == XmlRpc::XmlRpcValue::TypeArray)
+    num_params = params.size();
+  if (num_params > 1)
+  {
+    std::string reason = params[1];
+    ROS_WARN("Shutdown request received. Reason: [%s]", reason.c_str());
+    g_request_shutdown = 1; // Set flag
+  }
+
+  result = ros::xmlrpc::responseInt(1, "", 0);
+}
