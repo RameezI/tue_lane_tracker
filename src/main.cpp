@@ -16,40 +16,80 @@ namespace po = boost::program_options;
 //Fucntion definitions
 unique_ptr<FrameFeeder> createFrameFeeder(FrameSource srcMode, string srcString);
 bool reboot(tue_lane_tracker::reboot::Request  &req, tue_lane_tracker::reboot::Response &res);
-void callback(tue_lane_tracker::LaneTrackerConfig& Config, uint32_t level);
 void shutdownCallback(XmlRpc::XmlRpcValue& params, XmlRpc::XmlRpcValue& result);
 
 // Signal-safe flag for whether ros-kill shutdown is requested
 sig_atomic_t volatile g_request_shutdown = 0;
 sig_atomic_t volatile g_request_reboot 	 = 0;
+
+
+
+
+//Local Parameter Server
+class ParmServer
+{
+  public:
+  LaneTracker::Config mConfig;
+
+  public:
+  void callback(tue_lane_tracker::LaneTrackerConfig& Config, uint32_t level);
+
+  LaneTracker::Config& getConfig()
+  {
+	return mConfig;
+  }
+
+  void setConfig(const tue_lane_tracker::LaneTrackerConfig Config)
+  {
+	mConfig.lane_avg_width 		= Config.lane_avg_width;
+        mConfig.lane_std_width 		= Config.lane_std_width;
+	mConfig.lane_min_width 		= Config.lane_min_width;
+	mConfig.lane_max_width 		= Config.lane_max_width;
+	mConfig.lane_marker_width	= Config.lane_marker_width;
+          
+        //Camera Resolution
+        mConfig.cam_res_v		= Config.cam_res_v;
+        mConfig.cam_res_h 		= Config.cam_res_h;
+
+        // Camera Intrinsic parameters
+        mConfig.cam_fx  		= Config.cam_fx;
+        mConfig.cam_fy			= Config.cam_fy;
+
+        mConfig.cam_cx			= Config.cam_cx;
+        mConfig.cam_cy			= Config.cam_cy;
+
+        mConfig.cam_pitch		= Config.cam_pitch; 
+        mConfig.cam_yaw			= Config.cam_yaw;
+        mConfig.cam_height		= Config.cam_height;
+        mConfig.cam_lateral_offset	= Config.cam_lateral_offset;
+
+	//LaneFilter VpFilter Paramters 
+        mConfig.base_line_IBCS       	= Config.base_line_IBCS;
+        mConfig.purview_line_IBCS    	= Config.purview_line_IBCS;      
+        mConfig.step_lane_filter_cm  	= Config.step_lane_filter_cm;
+        mConfig.step_vp_filter       	= Config.step_vp_filter;
+        mConfig.vp_range_ver         	= Config.vp_range_ver; 
+        mConfig.vp_range_hor         	= Config.vp_range_hor;
+        mConfig.buffer_count         	= Config.buffer_count;
+        mConfig.display_graphics     	= Config.display_graphics;
+  }
+
+};
  
+
 
 int main(int argc, char* argv[]) /**
 	This is the entry point of the application.
 	- Initialises the sigInit handler
-	- Creates a stateMachine and spins it until user issues a quit signal through the sigInit handler.
+	- Creates a stateMachine and spins it until user issues a quit signal through the sigInt handler.
 	*/
 {
 	int lReturn 	= 0;
 
-	ros::init(argc, argv, "lane_tracker", ros::init_options::NoSigintHandler);
- 	signal(SIGINT, &SigInt::handler);
-
-	ros::NodeHandle   ros_handle;
-
-	//ros::Rate 	loop_rate(20);
-	ros::ServiceServer service = ros_handle.advertiseService("lane_tracker/reboot", reboot);
-	dynamic_reconfigure::Server<tue_lane_tracker::LaneTrackerConfig> parm_server;
-	dynamic_reconfigure::Server<tue_lane_tracker::LaneTrackerConfig>::CallbackType cb;
-	cb = boost::bind(&callback, _1, _2);
-	parm_server.setCallback(cb);
-
-
-
 	FrameSource 	lFrameSource;
 	std::string 	lSourceStr;
 
-	// Prsing command line options
+	// Parsing command line options
 	{
 	  po::options_description	lDesc("Options");
 
@@ -86,15 +126,28 @@ int main(int argc, char* argv[]) /**
 	} // End parsing command line options
 
 
-	unique_ptr<LaneTracker::Config> lPtrConfig;
-	if (lReturn == 0) //create Configuration
+	try
 	{
-	  lPtrConfig.reset(new LaneTracker::Config);
-	  if(lPtrConfig == nullptr)
-	  {
-	    lReturn = -1;
-	  }
+	 ros::init(argc, argv, "lane_tracker", ros::init_options::NoSigintHandler);
+ 	 signal(SIGINT, &SigInt::handler);
 	}
+	catch(...)
+	{
+	 cout<<"ros initialisation failed"<<endl;
+	 lReturn = -1;
+	}
+
+	ros::NodeHandle   ros_handle;
+	ParmServer 	  lParmServer;
+
+	ros::ServiceServer service = ros_handle.advertiseService("lane_tracker/reboot", reboot);
+	dynamic_reconfigure::Server<tue_lane_tracker::LaneTrackerConfig> parm_server;
+	dynamic_reconfigure::Server<tue_lane_tracker::LaneTrackerConfig>::CallbackType cb;
+	cb = boost::bind(&ParmServer::callback,&lParmServer, _1, _2);
+	parm_server.setCallback(cb);
+
+
+
 
 
 	unique_ptr<FrameFeeder> lPtrFeeder;
@@ -122,6 +175,8 @@ int main(int argc, char* argv[]) /**
 	  }
 	}
 
+	LaneTracker::Config& lConfig = lParmServer.getConfig();
+
 
 	unique_ptr<StateMachine> lPtrStateMachine;
 	if (lReturn==0) //create StateMachine
@@ -133,7 +188,7 @@ int main(int argc, char* argv[]) /**
 
 	  try
 	  {
-	       lPtrStateMachine.reset( new StateMachine( move(lPtrFeeder), *lPtrConfig.get() ) );
+	       lPtrStateMachine.reset( new StateMachine( move(lPtrFeeder), lConfig ) );
 	  }
 	  catch(const char* msg)
 	  {
@@ -168,6 +223,7 @@ int main(int argc, char* argv[]) /**
 
 	  while (stateMachine.getCurrentState() != States::DISPOSED )
 	  {
+	    
             if ( (lPtrSigInt->sStatus == SigStatus::STOP) | (g_request_shutdown==1))
 	    {
                stateMachine.quit();
@@ -257,10 +313,11 @@ unique_ptr<FrameFeeder> createFrameFeeder(FrameSource srcMode, string srcString)
 
 }
 
-void callback(tue_lane_tracker::LaneTrackerConfig& Config, uint32_t level)
+void ParmServer::callback(tue_lane_tracker::LaneTrackerConfig& Config, uint32_t level)
 {
   cout<<endl<<"New configuration recieved from the dynamic parameter server"<<endl;
   cout<<"Rebooting..."<<endl<<endl;
+  setConfig(Config);
 
   g_request_reboot=1;
 }
