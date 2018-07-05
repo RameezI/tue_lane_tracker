@@ -1,8 +1,11 @@
 #include <SigInt.h>
 #include "FrameFeeder.h"
 #include "StateMachine.h"
+#include "LaneModel.h"
 #include "boost/program_options.hpp"
+
 #include "ros/ros.h"
+#include "tue_lane_tracker/Waypoints.h"
 #include <ros/xmlrpc_manager.h>
 #include <dynamic_reconfigure/server.h>
 #include "tue_lane_tracker/reboot.h"
@@ -21,8 +24,6 @@ void shutdownCallback(XmlRpc::XmlRpcValue& params, XmlRpc::XmlRpcValue& result);
 // Signal-safe flag for whether ros-kill shutdown is requested
 sig_atomic_t volatile g_request_shutdown = 0;
 sig_atomic_t volatile g_request_reboot 	 = 0;
-
-
 
 
 //Local Parameter Server
@@ -89,9 +90,11 @@ int main(int argc, char* argv[]) /**
 	FrameSource 	lFrameSource;
 	std::string 	lSourceStr;
 
+
 	// Parsing command line options
 	{
-	  po::options_description	lDesc("Options");
+
+	  po::options_description  lDesc("Options");
 
 	  lDesc.add_options()
 	  ("help,h",
@@ -117,7 +120,7 @@ int main(int argc, char* argv[]) /**
 	     cout <<FrameSource::STREAM<<" ";
 	     cout <<FrameSource::GMSL<<"]";
 
-	     cout <<endl<<endl<< "	Examples:"<<endl;
+	     cout <<endl<<endl<< "Examples:"<<endl;
 	     cout<< "	./TUeLaneTracker -m " << FrameSource::DIRECTORY << " -s " << "/home/DataSet" <<endl;
 	     cout<<endl<<endl;
 	     lReturn = 1;
@@ -146,6 +149,7 @@ int main(int argc, char* argv[]) /**
 	cb = boost::bind(&ParmServer::callback,&lParmServer, _1, _2);
 	parm_server.setCallback(cb);
 
+	ros::Publisher Waypoints_pub = ros_handle.advertise<tue_lane_tracker::Waypoints>("lane_tracker/way_points", 2);
 
 
 
@@ -176,6 +180,7 @@ int main(int argc, char* argv[]) /**
 	}
 
 	LaneTracker::Config& lConfig = lParmServer.getConfig();
+	LaneModel lLaneModel;
 
 
 	unique_ptr<StateMachine> lPtrStateMachine;
@@ -212,17 +217,20 @@ int main(int argc, char* argv[]) /**
 	  lPreviousState = lPtrStateMachine->getCurrentState();
 	}
 
-
-
+	
 	if(lReturn == 0) //spin the stateMachine
         {
     	  uint64_t        lCyclesCount = 0;
+    	  uint64_t        lSeq = 0;
     	  ProfilerLDT     lProfiler;
     	  StateMachine&   stateMachine = *lPtrStateMachine.get();
 
 
 	  while (stateMachine.getCurrentState() != States::DISPOSED )
 	  {
+
+	    // spin the state-Machine
+	    ros::spinOnce();
 	    
             if ( (lPtrSigInt->sStatus == SigStatus::STOP) | (g_request_shutdown==1))
 	    {
@@ -235,31 +243,56 @@ int main(int argc, char* argv[]) /**
 	       g_request_reboot = 0;
 	    }
 
-	    // spin the state-Machine
-	    ros::spinOnce();
 	    lProfiler.start("StateMachine_Cycle");
 
             lReturn = stateMachine.spin();
-             lCyclesCount ++;
-	
-	    lProfiler.end();
 
-	    if(lPreviousState != stateMachine.getCurrentState())
-	    {
+	   if(stateMachine.laneModel()) //if laneModel exists
+	   {
+	      lLaneModel = stateMachine.getLaneModel();
+
+	      geometry_msgs::Point lPoint;
+	      tue_lane_tracker::Waypoints msg;
+
+	      //Populate header
+	      msg.header.seq 		= lSeq;
+	      msg.header.stamp		= ros::Time::now();
+	      msg.header.frame_id	= "/vehicle_symmetry_plane";
+
+	      lPoint.x = (lLaneModel.boundaryLeft_cm[0] + lLaneModel.boundaryRight_cm[0])/2.0;
+	      lPoint.y = lLaneModel.lookAheadPts_cm[0];
+	      lPoint.z = 0;
+	      msg.points.push_back(lPoint);
+
+	      lPoint.x = (lLaneModel.boundaryLeft_cm[1] + lLaneModel.boundaryRight_cm[1])/2.0;
+	      lPoint.y = lLaneModel.lookAheadPts_cm[1]; 
+	      lPoint.z = 0;
+	      msg.points.push_back(lPoint);
+
+	      Waypoints_pub.publish(msg); //publish Waypoints
+
+	   }
+
+           lCyclesCount ++;
+	
+	   lProfiler.end();
+
+	   if(lPreviousState != stateMachine.getCurrentState())
+	   {
 		cout<<endl<<stateMachine.getCurrentState();
 		std::cout.flush();
 		lPreviousState = stateMachine.getCurrentState();
-	    }
+	   }
 
-	    else if (lCyclesCount%100==0)
-	    {
+	   else if (lCyclesCount%100==0)
+	   {
 	 	cout <<endl<<stateMachine.getCurrentState();
 		cout <<"state cycle-count = " << lCyclesCount<<"    Cycle-Time [Min, Avg, Max] : "
 		<<"[ "<<lProfiler.getMinTime("StateMachine_Cycle")<<" "
 		<<lProfiler.getAvgTime("StateMachine_Cycle")<<" "
 		<<lProfiler.getMaxTime("StateMachine_Cycle")<<" "
 		<<" ]";
-	    }
+	   }
 
 	  }// End spinning
 	}
