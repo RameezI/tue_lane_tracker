@@ -1,8 +1,6 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(tue_lane_tracker)
 
-SET(CMAKE_MODULE_PATH 	 ${CMAKE_SOURCE_DIR}/TUeLaneTracker/cmake/Modules {CMAKE_MODULE_PATH} )
-
 ## Compile as C++11, supported in ROS Kinetic and newer
  add_compile_options(-std=c++11)
 
@@ -18,10 +16,13 @@ find_package(catkin REQUIRED COMPONENTS
   dynamic_reconfigure
 )
 
+
+set(Boost_DEBUG 1)
 ## System dependencies are found with CMake's conventions
 find_package(OpenCV REQUIRED)
 find_package(Threads REQUIRED)
 find_package(Boost 1.62.0 EXACT REQUIRED COMPONENTS program_options )
+
 
 
 ## Uncomment this if the package has a setup.py. This macro ensures
